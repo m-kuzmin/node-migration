@@ -6,9 +6,6 @@
   "bin": {
     "migrate": "./bin/migrate"
   },
-  "scripts": {
-    "lint": "standard"
-  },
   "keywords": [
     "migration",
     "migrate"
@@ -22,11 +19,8 @@
     "url": "https://github.com/scottmartin/node-migration.git"
   },
   "license": "ISC",
-  "devDependencies": {
-    "standard": "^8.4.0"
-  },
   "dependencies": {
-    "commander": "^2.9.0",
-    "fs-extra": "^0.30.0"
+    "commander": "^14.0.2",
+    "fs-extra": "^11.3.2"
   }
 }
