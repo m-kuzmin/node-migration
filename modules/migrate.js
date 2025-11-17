@@ -1,137 +1,151 @@
-const path = require('path')
-const fse = require('fs-extra')
-const setup = require('./setup')
+const path = require('path');
+const fse = require('fs-extra');
+const { JsonContext } = require('./json_context');
+const { Context } = require('./context');
+const { loadMigrationsFromDir, Migration } = require('./migration');
 
-module.exports = {
-  run (direction, { dir = './migrations', file = 'migrations.json' } = {}) {
-    fse.ensureDirSync(path.resolve(dir))
-    let context
-
-    direction = String(direction).toLowerCase()
-    return new Promise((resolve, reject) => {
-      if (direction !== 'up' && direction !== 'down') {
-        reject(new Error('Run was called with a direction other than up or down.'))
-      }
-      resolve()
-    })
-    .then(() => setup({ dir, file }))
-    .then((ctx) => {
-      context = ctx
-    })
-    .then(() => context._getState())
-    .then(() => this[direction](context, { dir }))
-    .then(() => context._saveState())
-    .catch((error) => {
-      console.error(error)
-    })
+/**
+ * Run a migration in a particular direction
+ * 
+ * @param {'up'|'down'} direction
+ * @param {Object} options
+ *   @param {import('./context').Context} options.context
+ *   @param {Migration[]} options.migrations
+ * 
+ * @returns {Promise<void>}
+ */
+exports.run = async (
+  direction,
+  {
+    migrations = loadMigrationsFromDir('./migrations'),
+    context = new JsonContext('./migrations/migrations.json')
   },
+) => {
+  await context._getState();
 
-  up (ctx, { dir }) {
-    // Get the list of migration files and the currently applied migration
-    const fileList = this._getMigrationsFromFiles(dir)
-    const currentMigration = ctx.state.length > 0
-      ? ctx.state[ctx.state.length - 1] : null
-    let migrationCount = 0
+  switch (direction) {
+    case 'up':
+      await up(context, migrations);
+      break;
 
-    // Check to see if each migration needs to be run
-    const promiseChain = fileList.reduce((promiseChain, file) => {
-      if (!currentMigration || file.id > currentMigration.id) {
-        const fileContents = require(path.resolve(dir, this.toFilename(file)))
-        if (fileContents.up) {
-          migrationCount += 1
-          return promiseChain
-          .then(() => {
-            console.log('Running migration:', file.name, `(${file.id})`)
-          })
-          .then(() => fileContents.up(ctx))
-        }
-      }
-      return promiseChain
-    }, Promise.resolve())
+    case 'down':
+      await down(context, migrations);
+      break;
 
-    // Add the last run migration to the state
-    if (migrationCount > 0) {
-      return promiseChain.then(() => {
-        const migration = fileList.slice(-1)[0]
-        migration.migratedOn = new Date()
-        ctx.state.push(migration)
-      })
-    } else {
-      return promiseChain.then(() => {
-        console.log('No migrations to run')
-      })
-    }
-  },
-
-  down (ctx, { dir }) {
-    // Get the list of migration files in reverse and the currently and
-    // previously applied migrations
-    const fileList = this._getMigrationsFromFiles(dir).reverse()
-    const currentMigration = ctx.state.length > 0
-      ? ctx.state[ctx.state.length - 1] : null
-    const previousMigration = ctx.state.length > 1
-      ? ctx.state[ctx.state.length - 2] : null
-    let migrationCount = 0
-
-    // Check to see if each migration needs to be run
-    const promiseChain = fileList.reduce((promiseChain, file) => {
-      const revertToPrevious = previousMigration &&
-        (file.id <= currentMigration.id && file.id > previousMigration.id)
-      const revertCurrent = (currentMigration && !previousMigration) &&
-        file.id <= currentMigration.id
-
-      if (revertToPrevious || revertCurrent) {
-        const fileContents = require(path.resolve(dir, this.toFilename(file)))
-        if (fileContents.down) {
-          migrationCount += 1
-          return promiseChain
-          .then(() => {
-            console.log('Reversing migration:', file.name, `(${file.id})`)
-          })
-          .then(() => fileContents.down(ctx))
-        }
-      }
-      return promiseChain
-    }, Promise.resolve())
-
-    // Remove the last run migration from the state
-    if (migrationCount > 0) {
-      return promiseChain.then(() => {
-        ctx.state.pop()
-      })
-    } else {
-      return promiseChain.then(() => {
-        console.log('No migrations to run')
-      })
-    }
-  },
-
-  toFilename (migration) {
-    return `${migration.id}_${migration.name}.js`
-  },
-
-  fromFilename (filename) {
-    const regex = /^(\d+)_(\w+).js$/i
-    const m = regex.exec(filename)
-
-    if (m !== null) {
-      return {
-        id: parseInt(m[1], 10),
-        name: m[2]
-      }
-    }
-    return null
-  },
-
-  _getMigrationsFromFiles (dir) {
-    const migrationsPath = path.resolve(dir)
-    if (fse.existsSync(migrationsPath)) {
-      return fse.readdirSync(migrationsPath)
-      .reduce((fileList, filename) => {
-        const migration = this.fromFilename(filename)
-        if (migration) fileList.push(migration)
-        return fileList
-      }, [])
-    }
+    default:
+      throw new Error('Run was called with a direction other than up or down.');
   }
-}
+
+  await context._saveState();
+};
+
+/**
+ * Run the migration up
+ * 
+ * @param {Context} ctx The migration context
+ * @param {Migration[]} migrations
+ *
+ * @returns {Promise<void>}
+ */
+async function up(ctx, migrations) {
+  const currentId = ctx.state.length > 0
+    ? ctx.state[ctx.state.length - 1].id
+    : null;
+
+  let migrationCount = 0;
+
+  // Check to see if each migration needs to be run
+
+  /**
+   * @type {Promise<void>}
+   */
+  let promiseChain = Promise.resolve();
+  migrations.filter(({ id: toApply }) => !currentId || currentId < toApply)
+    .forEach(({ id, name, up }) => {
+      if (!up) {
+        return;
+      }
+
+      migrationCount += 1;
+      // @ts-ignore
+      promiseChain = promiseChain
+        .then(() => {
+          console.log('Running migration:', name, `(${id})`)
+        })
+        .then(() => up(ctx));
+    });
+
+  // Add the last run migration to the state
+  if (migrationCount > 0) {
+    return promiseChain.then(() => {
+      const migration = migrations.slice(-1)[0]
+      ctx.state.push(migration.toExecuted(new Date()))
+    });
+  } else {
+    return promiseChain.then(() => {
+      console.log('No migrations to run')
+    });
+  }
+};
+
+/**
+ * Run the migration down
+ * 
+ * @param {Context} ctx The migration context
+ * @param {Migration[]} migrations
+ *
+ * @returns {Promise<void>}
+ */
+async function down(ctx, migrations) {
+  const currentId = ctx.state.length > 0
+    ? ctx.state[ctx.state.length - 1].id
+    : null;
+
+  const previosId = ctx.state.length > 1
+    ? ctx.state[ctx.state.length - 2].id
+    : null;
+
+  let migrationCount = 0;
+
+  // Check to see if each migration needs to be run
+  let promiseChain = Promise.resolve();
+  migrations.filter(({ id: toRevert }) => {
+    // No migrations ran yet
+    if (!currentId) {
+      return false;
+    }
+
+    // We have at least 2 migrations already, and we need to revert up to the previous one
+    if (previosId) {
+      return previosId < toRevert && toRevert <= currentId;
+    }
+
+    // We have exactly 1 migration and we need to revert everything up to that point
+    // But not any future ones, which were not executed (up) yet.
+    return toRevert <= currentId;
+  })
+    .forEach(({ id, name, down }) => {
+      if (!down) {
+        return;
+      }
+
+      migrationCount += 1;
+      // @ts-ignore
+      promiseChain = promiseChain
+        .then(() => {
+          console.log('Reversing migration:', name, `(${id})`)
+        })
+        .then(() => down(ctx))
+    });
+
+  // Remove the last run migration from the state
+  if (migrationCount > 0) {
+    return promiseChain.then(() => {
+      ctx.state.pop()
+    })
+  } else {
+    return promiseChain.then(() => {
+      console.log('No migrations to run')
+    })
+  }
+};
